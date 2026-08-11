@@ -18,7 +18,8 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends build-essential cmake git python3 \
   && rm -rf /var/lib/apt/lists/*
 COPY package*.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
+COPY --from=build /app/node_modules/raknet-native/build ./node_modules/raknet-native/build
 COPY --from=build /app/dist ./dist
 COPY assets ./assets
 RUN mkdir -p /app/data
