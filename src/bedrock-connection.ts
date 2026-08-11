@@ -64,9 +64,14 @@ export class BedrockRealmConnection extends EventEmitter {
     try {
       const joinInfo = await this.api.getJoinInfo(this.realm.id);
       const protocol = joinInfo.networkProtocol?.toUpperCase();
+      this.log.info(`Realm ${this.realm.id} join protocol resolved`, {
+        protocol: protocol || 'legacy',
+        region: joinInfo.region,
+      });
       let client: ClientLike;
       if (protocol === 'NETHERNET_JSONRPC' || protocol === 'NETHERNET') {
         if (!joinInfo.address) throw new Error(`Realm ${this.realm.id} did not return a NetherNet network ID`);
+        this.log.info(`Starting NetherNet transport for Realm ${this.realm.id}`);
         client = createNethernetClient({
           realm: this.realm,
           networkId: joinInfo.address,

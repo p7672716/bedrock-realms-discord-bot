@@ -81,6 +81,7 @@ export class NethernetRealmTransport extends EventEmitter {
   }
 
   connect(): void {
+    this.options.log.info(`Starting NetherNet signaling for network ${this.options.networkId}`);
     void this.connectAsync().catch((error) => {
       const reason = error instanceof Error ? error.message : String(error);
       this.options.log.warn(`Could not connect to NetherNet network ${this.options.networkId}`, reason);
@@ -99,6 +100,7 @@ export class NethernetRealmTransport extends EventEmitter {
     client.pingInterval = undefined;
     client.on('connected', () => {
       if (this.closed) return;
+      this.options.log.info(`NetherNet WebRTC connected for network ${this.options.networkId}`);
       this.emit('connected');
       this.onConnected();
     });
@@ -134,6 +136,9 @@ export class NethernetRealmTransport extends EventEmitter {
 
     try {
       await signaling.connect();
+      this.options.log.info(`NetherNet signaling credentials received for network ${this.options.networkId}`, {
+        iceServers: signaling.credentials.length,
+      });
       client.credentials = signaling.credentials;
       client.signalHandler = signaling.write.bind(signaling);
       await client.connect();
@@ -212,6 +217,7 @@ class JsonRpcSignaling extends EventEmitter {
       },
     });
     this.ws = ws;
+    this.log.info(`NetherNet signaling WebSocket opened for network ${this.serverNetworkId}`);
     this.lastLiveness = Date.now();
     ws.on('open', () => this.onOpen());
     ws.on('close', (code: unknown, reason: unknown) => this.onClose(Number(code), String(reason || '')));
@@ -306,6 +312,9 @@ class JsonRpcSignaling extends EventEmitter {
 
     if (Array.isArray(message.result?.TurnAuthServers)) {
       this.credentials = parseTurnServers(message.result.TurnAuthServers);
+      this.log.info(`NetherNet TURN credentials parsed for network ${this.serverNetworkId}`, {
+        iceServers: this.credentials.length,
+      });
       this.emit('credentials', this.credentials);
     }
 
