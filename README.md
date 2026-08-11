@@ -61,6 +61,7 @@ Realm IDはRealms APIまたはクライアントのRealm情報から確認しま
 | `DISCORD_NOTIFY_CHANNEL_ID` | 条件付き | 全Realm共通の通知先チャンネル |
 | `AUTH_CACHE_KEY` | No | Microsoft認証キャッシュの識別名 |
 | `BEDROCK_VERSION` | No | bedrock-protocolが対応するBedrockバージョン |
+| `RAKNET_BACKEND` | No | `raknet-native`（推奨）または`jsp-raknet` |
 | `REALMS_JSON` | Yes | 監視対象RealmのJSON配列 |
 | `DATA_DIR` | No | 状態と認証キャッシュの保存先 |
 | `PRESENCE_SOURCE` | No | `protocol` または `api` |

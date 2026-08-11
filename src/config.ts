@@ -15,6 +15,12 @@ function integerEnv(name: string, fallback: number): number {
   return Math.floor(value);
 }
 
+function parseRaknetBackend(): AppConfig['raknetBackend'] {
+  const value = process.env.RAKNET_BACKEND?.trim().toLowerCase() || 'raknet-native';
+  if (value === 'raknet-native' || value === 'jsp-raknet') return value;
+  throw new Error('RAKNET_BACKEND must be raknet-native or jsp-raknet');
+}
+
 function parseRealms(): RealmConfig[] {
   const raw = required('REALMS_JSON');
   let parsed: unknown;
@@ -66,6 +72,7 @@ export function loadConfig(): AppConfig {
       clientVersion: process.env.BEDROCK_VERSION?.trim() || '1.26.40',
       storyEventsPathTemplate: process.env.REALM_STORY_EVENTS_PATH_TEMPLATE?.trim() || undefined,
     },
+    raknetBackend: parseRaknetBackend(),
     dataDir,
     presenceSource,
     presencePollMs: integerEnv('PRESENCE_POLL_MS', 60_000),

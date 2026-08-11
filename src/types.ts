@@ -21,6 +21,7 @@ export type AppConfig = {
     clientVersion: string;
     storyEventsPathTemplate?: string;
   };
+  raknetBackend: 'raknet-native' | 'jsp-raknet';
   dataDir: string;
   presenceSource: 'protocol' | 'api';
   presencePollMs: number;

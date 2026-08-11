@@ -61,7 +61,7 @@ export class BedrockRealmConnection extends EventEmitter {
         profilesFolder: this.config.auth.cacheDir,
         version: this.config.realmsApi.clientVersion as any,
         realms: { realmId: this.realm.id },
-        raknetBackend: 'jsp-raknet',
+        raknetBackend: this.config.raknetBackend,
         conLog: null,
         onMsaCode: (code: any) => {
           const uri = code.verification_uri || code.verificationUri || 'https://www.microsoft.com/link';
