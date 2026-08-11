@@ -65,18 +65,6 @@ export function createNethernetClient(options: NethernetClientOptions): Netherne
   client.disableEncryption = true;
   client.encryptionEnabled = false;
 
-  let receivedPackets = 0;
-  client.on('packet', (packet: any) => {
-    if (receivedPackets >= 20) return;
-    receivedPackets += 1;
-    options.log.info(`Realm ${options.realm.id} Bedrock packet received`, {
-      packet: packet?.data?.name,
-      bytes: packet?.fullBuffer?.length,
-    });
-  });
-  client.on('loggingIn', () => options.log.info(`Realm ${options.realm.id} Bedrock login sent`));
-  client.on('join', () => options.log.info(`Realm ${options.realm.id} Bedrock login accepted`));
-
   // Keep the post-login flow in sync with bedrock-protocol's normal client
   // factory. Realms wait for these acknowledgements before sending start_game
   // and the player_spawn status, including when no packs are installed.
