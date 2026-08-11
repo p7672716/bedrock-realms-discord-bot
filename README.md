@@ -141,8 +141,9 @@ VMのディスク上にある `data` ディレクトリを削除しないでく�
 | `/location list` | ディメンション別に保存地点名を一覧表示します |
 | `/location search` | 名称または備考を検索します |
 | `/location show` | 保存地点の座標、備考、作成者、画像を表示します |
+| `/location delete` | 指定した保存地点を削除します |
 | `/location edit` | 保存地点の名称、座標、ディメンション、備考を項目単位で編集します |
-| `/location image add` | 保存地点に画像を追加します |
+| `/location image add` | コマンド直後に同じチャンネルへ投稿された画像を保存地点へ追加します |
 | `/location image remove` | `show`で表示された画像番号を指定して画像を削除します |
 
 `/realm` はRealm情報に加えて、接続ホスト、ポート、リージョンも表示します。
@@ -158,8 +159,9 @@ VMのディスク上にある `data` ディレクトリを削除しないでく�
 /location list
 /location search <検索ワード>
 /location show <名称>
+/location delete <名称>
 /location edit <名称> <項目名> <変更後>
-/location image add <名称> <画像>
+/location image add <名称>
 /location image remove <名称> <画像番号>
 ```
 
@@ -172,15 +174,17 @@ Discord上では、実際には入力欄として表示されます。保存時�
 /location list
 /location search query:倉庫
 /location show name:拠点
+/location delete name:旧拠点
 /location edit target:拠点 field:name value:新拠点
 /location edit target:拠点 field:coordinates x:130 y:65 z:-40
 /location edit target:拠点 field:dimension value:nether
 /location edit target:拠点 field:note value:ネザー側の入口
-/location image add target:拠点 image_01:画像ファイル
+/location image add target:拠点
+（BOTの案内後、同じチャンネルへ画像を投稿）
 /location image remove target:拠点 image_index:1
 ```
 
-編集項目は `名称`、`座標`、`ディメンション`、`備考` です。座標を変更する場合はX・Y・Zをすべて指定します。画像は保存時または `/location image add` で追加でき、`show` の画像一覧に表示される番号を `/location image remove` に指定して削除します。画像URLは `image_urls` に改行またはカンマ区切りで複数指定できます。
+編集項目は `名称`、`座標`、`ディメンション`、`備考` です。座標を変更する場合はX・Y・Zをすべて指定します。画像は保存時または `/location image add` で追加でき、画像追加ではBOTの案内から60秒以内に、コマンドを実行したユーザーが同じチャンネルへ投稿した画像を対象にします。`show` の画像一覧に表示される番号を `/location image remove` に指定して削除します。画像URLは保存時の `image_urls` に改行またはカンマ区切りで複数指定できます。
 
 保存地点のデータは `DATA_DIR/state.json` に保存されるため、VMやBOTを再起動しても維持されます。
 

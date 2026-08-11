@@ -85,6 +85,44 @@ test('location names are unique per Realm and edits reject duplicates', async ()
   }
 });
 
+test('locations can be deleted by name and persist the deletion', async () => {
+  const dataDir = testDataDir();
+  try {
+    const store = new StateStore(dataDir);
+    await store.load();
+    store.createLocation('123', {
+      name: 'Home',
+      x: 0,
+      y: 64,
+      z: 0,
+      dimension: 'overworld',
+      images: [],
+      createdBy: { id: 'user-1', name: 'Alex' },
+    });
+    store.createLocation('123', {
+      name: 'Mine',
+      x: 10,
+      y: 20,
+      z: 30,
+      dimension: 'overworld',
+      images: [],
+      createdBy: { id: 'user-1', name: 'Alex' },
+    });
+
+    const deleted = store.deleteLocation('123', 'ｈｏｍｅ');
+    await store.flush();
+    assert.equal(deleted.name, 'Home');
+    assert.deepEqual(store.listLocations('123').map((location) => location.name), ['Mine']);
+    assert.throws(() => store.deleteLocation('123', 'Home'), /LOCATION_NOT_FOUND/);
+
+    const second = new StateStore(dataDir);
+    await second.load();
+    assert.deepEqual(second.listLocations('123').map((location) => location.name), ['Mine']);
+  } finally {
+    await fs.rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test('location search matches names and notes and edit can replace images', async () => {
   const dataDir = testDataDir();
   try {

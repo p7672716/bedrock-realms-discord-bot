@@ -83,6 +83,17 @@ export class StateStore {
     );
   }
 
+  deleteLocation(realmId: string, targetName: string): SavedLocation {
+    const realm = this.getRealm(realmId);
+    const index = realm.locations.findIndex(
+      (location) => normalizeLocationName(location.name) === normalizeLocationName(targetName),
+    );
+    if (index < 0) throw new Error('LOCATION_NOT_FOUND');
+    const [location] = realm.locations.splice(index, 1);
+    void this.flush();
+    return location;
+  }
+
   createLocation(realmId: string, input: LocationCreateInput): SavedLocation {
     const realm = this.getRealm(realmId);
     if (realm.locations.some((location) => normalizeLocationName(location.name) === normalizeLocationName(input.name))) {

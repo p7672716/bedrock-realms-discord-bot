@@ -11,6 +11,7 @@ import {
   type SlashCommandSubcommandBuilder,
   type SlashCommandSubcommandsOnlyBuilder,
   type ChatInputCommandInteraction,
+  type Message,
 } from 'discord.js';
 import type { Logger } from './logger.js';
 import { RealmApiClient } from './realm-api.js';
@@ -41,6 +42,7 @@ type EventAsset = {
 };
 
 const LOCATION_IMAGE_OPTION_NAMES = Array.from({ length: 17 }, (_, index) => `image_${String(index + 1).padStart(2, '0')}`);
+const LOCATION_IMAGE_WAIT_MS = 60_000;
 
 const EVENT_ASSET_DIR = path.resolve(process.cwd(), 'assets', 'events');
 const EVENT_ASSET_FILES = [
@@ -105,8 +107,9 @@ const EVENT_ASSETS: EventAsset[] = EVENT_ASSET_FILES.map((fileName) => ({
 }));
 
 export class DiscordService {
-  readonly client = new Client({ intents: [GatewayIntentBits.Guilds] });
+  readonly client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages] });
   private readonly commands;
+  private readonly pendingLocationImageAdds = new Set<string>();
 
   constructor(
     private readonly config: AppConfig,
@@ -213,12 +216,27 @@ export class DiscordService {
     const subcommandGroup = interaction.options.getSubcommandGroup(false);
     const subcommand = interaction.options.getSubcommand();
     if (subcommandGroup === 'image' && subcommand === 'add') {
-      const location = this.store.addLocationImages(
-        realm.id,
-        requiredOptionString(interaction, 'target'),
-        collectLocationImages(interaction),
-      );
-      await interaction.editReply({ content: `保存地点「${location.name}」に画像を追加しました。` });
+      const target = requiredOptionString(interaction, 'target');
+      const location = this.store.getLocation(realm.id, target);
+      if (!location) throw new Error('LOCATION_NOT_FOUND');
+      const pendingKey = `${interaction.channelId}:${interaction.user.id}`;
+      if (this.pendingLocationImageAdds.has(pendingKey)) throw new Error('LOCATION_IMAGE_ADD_PENDING');
+      this.pendingLocationImageAdds.add(pendingKey);
+      try {
+        await interaction.editReply({
+          content: `保存地点「${location.name}」に追加する画像を、このチャンネルへ${LOCATION_IMAGE_WAIT_MS / 1000}秒以内に投稿してください。`,
+        });
+        const images = await this.waitForLocationImages(interaction);
+        const updated = this.store.addLocationImages(realm.id, target, images);
+        await interaction.editReply({ content: `保存地点「${updated.name}」に画像を追加しました。` });
+      } finally {
+        this.pendingLocationImageAdds.delete(pendingKey);
+      }
+      return;
+    }
+    if (subcommand === 'delete') {
+      const location = this.store.deleteLocation(realm.id, requiredOptionString(interaction, 'name'));
+      await interaction.editReply({ content: `保存地点「${location.name}」を削除しました。` });
       return;
     }
     if (subcommandGroup === 'image' && subcommand === 'remove') {
@@ -293,6 +311,27 @@ export class DiscordService {
       return;
     }
     throw new Error('LOCATION_SUBCOMMAND_UNKNOWN');
+  }
+
+  private waitForLocationImages(interaction: ChatInputCommandInteraction): Promise<LocationImage[]> {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error('LOCATION_IMAGES_TIMEOUT'));
+      }, LOCATION_IMAGE_WAIT_MS);
+      const onMessage = (message: Message): void => {
+        if (message.author.bot || message.author.id !== interaction.user.id || message.channelId !== interaction.channelId) return;
+        const images = collectLocationImagesFromMessage(message);
+        if (images.length === 0) return;
+        cleanup();
+        resolve(images);
+      };
+      const cleanup = (): void => {
+        clearTimeout(timeout);
+        this.client.off('messageCreate', onMessage);
+      };
+      this.client.on('messageCreate', onMessage);
+    });
   }
 
   private resolveCommandRealm(interaction: ChatInputCommandInteraction): RealmConfig | undefined {
@@ -392,6 +431,14 @@ function buildCommands(realms: RealmConfig[]): Array<SlashCommandBuilder | Slash
     })
     .addSubcommand((subcommand) => {
       subcommand
+        .setName('delete')
+        .setDescription('保存地点を削除します')
+        .addStringOption((option) => option.setName('name').setDescription('削除する保存地点の名称').setRequired(true));
+      addRealmOption(subcommand, names, realms.length > 1);
+      return subcommand;
+    })
+    .addSubcommand((subcommand) => {
+      subcommand
         .setName('edit')
         .setDescription('保存地点を編集します')
         .addStringOption((option) => option.setName('target').setDescription('編集対象の保存地点名').setRequired(true))
@@ -418,7 +465,6 @@ function buildCommands(realms: RealmConfig[]): Array<SlashCommandBuilder | Slash
           .setDescription('保存地点に画像を追加します')
           .addStringOption((option) => option.setName('target').setDescription('保存地点の名称').setRequired(true));
         addRealmOption(subcommand, names, realms.length > 1);
-        addLocationImageOptions(subcommand);
         return subcommand;
       })
       .addSubcommand((subcommand) => {
@@ -550,6 +596,22 @@ function collectLocationImages(interaction: ChatInputCommandInteraction): Locati
   return [...new Map(images.map((image) => [image.url, image])).values()];
 }
 
+function collectLocationImagesFromMessage(message: Message): LocationImage[] {
+  const images: LocationImage[] = [];
+  for (const attachment of message.attachments.values()) {
+    const contentType = attachment.contentType || undefined;
+    const looksLikeImage = contentType?.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(attachment.name);
+    if (!looksLikeImage) continue;
+    images.push({
+      url: attachment.url,
+      name: attachment.name,
+      contentType,
+      size: attachment.size,
+    });
+  }
+  return [...new Map(images.map((image) => [image.url, image])).values()];
+}
+
 function formatLocationList(locations: SavedLocation[], title: string, searchQuery?: string): string {
   const header = searchQuery === undefined ? title : `${title}（${locations.length}件）`;
   if (locations.length === 0) return `${header}\n該当する保存地点はありません。`;
@@ -618,6 +680,8 @@ function formatLocationError(error: unknown): string {
   const code = error instanceof Error ? error.message : String(error);
   if (code === 'LOCATION_NAME_ALREADY_EXISTS') return '同じ名称の保存地点が既にあります。別の名称を指定してください。';
   if (code === 'LOCATION_NOT_FOUND') return '指定された保存地点が見つかりません。';
+  if (code === 'LOCATION_IMAGE_ADD_PENDING') return '同じチャンネルで画像追加処理が既に待機中です。先に画像を投稿してください。';
+  if (code === 'LOCATION_IMAGES_TIMEOUT') return '60秒以内に画像が投稿されなかったため、画像追加を中止しました。';
   if (code === 'LOCATION_NAME_REQUIRED') return '保存地点の名称を指定してください。';
   if (code === 'LOCATION_COORDINATE_INVALID') return '座標には有効な数値を指定してください。';
   if (code === 'LOCATION_COORDINATES_REQUIRED') return '座標を変更する場合はX・Y・Zをすべて指定してください。';
