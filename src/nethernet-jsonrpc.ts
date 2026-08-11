@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module';
 import { EventEmitter, once } from 'node:events';
-import { generateKeyPairSync, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type { Authflow as AuthflowType } from 'prismarine-auth';
 import { CompactSign, importPKCS8 } from 'jose';
 import type { Logger } from './logger.js';
@@ -53,6 +53,7 @@ export type NethernetConnectionOptions = {
   networkId: string;
   version: string;
   authflow: AuthflowType;
+  identityPrivateKeyPem: string;
   token?: string;
   log: Logger;
 };
@@ -120,6 +121,7 @@ export class NethernetRealmTransport extends EventEmitter {
       client.networkId,
       this.options.authflow,
       this.options.version,
+      this.options.identityPrivateKeyPem,
       () => this.token,
       this.options.log,
     );
@@ -200,6 +202,7 @@ class JsonRpcSignaling extends EventEmitter {
     private readonly clientNetworkId: bigint,
     private readonly authflow: AuthflowType,
     private readonly version: string,
+    private readonly identityPrivateKeyPem: string,
     private readonly token: () => string | undefined,
     private readonly log: Logger,
   ) {
@@ -415,11 +418,11 @@ class JsonRpcSignaling extends EventEmitter {
     const token = this.token();
     if (!fingerprint || !token) return `${prefix}${sdp}`;
 
-    const { privateKey } = generateKeyPairSync('ec' as any, {
-      namedCurve: 'P-384',
-      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
-    });
-    const key = await importPKCS8(privateKey as unknown as string, 'ES384');
+    // The identity assertion must be signed by the same private key whose
+    // public x509 value is embedded in the multiplayer token (`cpk`) and in
+    // the Bedrock login JWT. Generating a new key here makes the Realm reject
+    // the connection with CONNECTERROR 37 (identity verification failed).
+    const key = await importPKCS8(this.identityPrivateKeyPem, 'ES384');
     const payload = JSON.stringify({ fingerprint: [{ algorithm: 'sha-256', digest: fingerprint }] });
     const signed = await new CompactSign(new TextEncoder().encode(payload))
       .setProtectedHeader({ alg: 'ES384' })

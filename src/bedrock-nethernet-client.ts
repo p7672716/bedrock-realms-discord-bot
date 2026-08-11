@@ -57,6 +57,7 @@ export function createNethernetClient(options: NethernetClientOptions): Netherne
     networkId: options.networkId,
     version: options.version,
     authflow: options.authflow,
+    identityPrivateKeyPem: client.ecdhKeyPair.privateKey.export({ format: 'pem', type: 'pkcs8' }).toString(),
     log: options.log,
   });
   client.connection = transport;
