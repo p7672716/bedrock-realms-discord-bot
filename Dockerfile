@@ -1,6 +1,9 @@
 FROM node:22-bookworm-slim AS build
 
 WORKDIR /app
+ENV CMAKE_BUILD_PARALLEL_LEVEL=1 \
+    MAKEFLAGS=-j1 \
+    npm_config_jobs=1
 RUN apt-get update \
   && apt-get install -y --no-install-recommends build-essential cmake git python3 \
   && rm -rf /var/lib/apt/lists/*
