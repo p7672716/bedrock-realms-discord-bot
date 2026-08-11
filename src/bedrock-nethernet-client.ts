@@ -77,6 +77,26 @@ export function createNethernetClient(options: NethernetClientOptions): Netherne
   client.on('loggingIn', () => options.log.info(`Realm ${options.realm.id} Bedrock login sent`));
   client.on('join', () => options.log.info(`Realm ${options.realm.id} Bedrock login accepted`));
 
+  // Keep the post-login flow in sync with bedrock-protocol's normal client
+  // factory. Realms wait for these acknowledgements before sending start_game
+  // and the player_spawn status, including when no packs are installed.
+  client.on('network_stack_latency', (packet: any) => {
+    if (packet?.needs_response) {
+      client.queue('network_stack_latency', { timestamp: packet.timestamp, needs_response: false });
+    }
+  });
+  client.once('resource_packs_info', () => {
+    const response = {
+      response_status: 'completed',
+      response_status_name: 'resourcepackstackfinished',
+      resourcepackids: [],
+    };
+    client.write('resource_pack_client_response', response);
+    client.once('resource_pack_stack', () => client.write('resource_pack_client_response', response));
+    client.queue('client_cache_status', { enabled: false });
+    setTimeout(() => client.queue('request_chunk_radius', { chunk_radius: client.viewDistance || 10 }), 500);
+  });
+
   // NetherNet already provides an authenticated encrypted WebRTC channel. The
   // RakNet ECDH/AES encryption must not be enabled for this transport. Keep
   // the normal handshake listeners, though: the server still expects the
