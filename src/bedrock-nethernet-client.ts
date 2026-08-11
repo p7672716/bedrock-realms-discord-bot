@@ -62,11 +62,15 @@ export function createNethernetClient(options: NethernetClientOptions): Netherne
   client.connection = transport;
   client.batchHeader = null;
   client.disableEncryption = true;
+  client.encryptionEnabled = false;
 
   // NetherNet already provides an authenticated encrypted WebRTC channel. The
-  // RakNet ECDH/AES handshake must not be installed for this transport.
-  client.removeAllListeners('server.client_handshake');
-  client.removeAllListeners('client.server_handshake');
+  // RakNet ECDH/AES encryption must not be enabled for this transport. Keep
+  // the normal handshake listeners, though: the server still expects the
+  // client to acknowledge its handshake before sending play packets.
+  client.startEncryption = () => {
+    client.encryptionEnabled = false;
+  };
 
   client.on('session', () => {
     transport.setToken(client.multiplayerToken);

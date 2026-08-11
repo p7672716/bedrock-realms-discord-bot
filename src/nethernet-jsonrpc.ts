@@ -8,8 +8,11 @@ import type { Logger } from './logger.js';
 const require = createRequire(import.meta.url);
 const { Client: NethernetClient, SignalStructure, SignalType } = require('nethernet') as {
   Client: new (networkId: string) => NethernetClientLike;
-  SignalStructure: { fromString(message: string): SignalLike };
-  SignalType: { ConnectRequest: string; CandidateAdd: string };
+  SignalStructure: {
+    new (type: string, connectionId: bigint, data: string, networkId?: string | bigint): SignalLike;
+    fromString(message: string): SignalLike;
+  };
+  SignalType: { ConnectRequest: string; ConnectResponse: string; CandidateAdd: string };
 };
 const { WebSocket } = require('ws') as { WebSocket: WebSocketConstructor };
 
@@ -161,11 +164,9 @@ export class NethernetRealmTransport extends EventEmitter {
         this.options.log.warn('Failed to close NetherNet client', error instanceof Error ? error.message : error);
       }
       if (client.pingInterval) clearInterval(client.pingInterval);
-      try {
-        client.socket?.close();
-      } catch {
-        // The socket may already be closed by the transport.
-      }
+      // node-nethernet schedules its own UDP socket close. Calling socket.close
+      // here as well races that timer and can terminate the whole bot with
+      // ERR_SOCKET_DGRAM_NOT_RUNNING.
     }
   }
 
@@ -184,6 +185,9 @@ class JsonRpcSignaling extends EventEmitter {
   private destroyed = false;
   private connectRequestSent = false;
   private pendingCandidates: SignalLike[] = [];
+  private pendingRemoteCandidates: SignalLike[] = [];
+  private connectionId?: bigint;
+  private candidatesSent = false;
 
   constructor(
     private readonly serverNetworkId: string,
@@ -256,25 +260,23 @@ class JsonRpcSignaling extends EventEmitter {
   async write(signal: SignalLike): Promise<void> {
     if (!this.ws || this.ws.readyState !== WEB_SOCKET_OPEN) throw new Error('NetherNet signaling WebSocket is not open');
     if (signal.type === SignalType.CandidateAdd && !this.connectRequestSent) {
-      this.pendingCandidates.push(signal);
+      if (!isUsableCandidate(signal.data)) return;
+      const candidate = withNetworkCost(signal, this.pendingCandidates.length === 0 ? 50 : 10);
+      this.pendingCandidates.push(candidate);
       return;
     }
     let data = signal.toString();
     if (signal.type === SignalType.CandidateAdd) {
-      if (/(?:tcp|::1|127\.0\.0\.1)/i.test(signal.data)) return;
-      if (!data.endsWith(' network-cost 10')) data += ' network-cost 10';
+      if (!isUsableCandidate(signal.data)) return;
+      data = withNetworkCost(signal, 10).toString();
     }
     if (signal.type === SignalType.ConnectRequest) {
+      this.connectionId = signal.connectionId;
       data = await this.prepareConnectRequest(data);
       this.connectRequestSent = true;
     }
 
     this.sendSignalPayload(signal.networkId, data);
-    if (signal.type === SignalType.ConnectRequest) {
-      const pending = this.pendingCandidates;
-      this.pendingCandidates = [];
-      for (const candidate of pending) await this.write(candidate);
-    }
   }
 
   private onOpen(): void {
@@ -340,6 +342,24 @@ class JsonRpcSignaling extends EventEmitter {
     try {
       const signal = SignalStructure.fromString(signalMessage);
       signal.networkId = String(param.From ?? this.serverNetworkId);
+      if (signal.type === SignalType.CandidateAdd && !isUsableCandidate(signal.data)) return;
+
+      // The Realm peer creates its ICE side after accepting the offer. Match
+      // the Bedrock client behavior by holding candidates until the answer is
+      // received, then flush both directions in a deterministic order.
+      if (signal.type === SignalType.CandidateAdd && !this.candidatesSent) {
+        this.pendingRemoteCandidates.push(signal);
+        return;
+      }
+      if (signal.type === SignalType.ConnectResponse && signal.connectionId === this.connectionId && !this.candidatesSent) {
+        this.candidatesSent = true;
+        const outgoing = this.pendingCandidates;
+        this.pendingCandidates = [];
+        for (const candidate of outgoing) await this.write(candidate);
+        const incoming = this.pendingRemoteCandidates;
+        this.pendingRemoteCandidates = [];
+        for (const candidate of incoming) this.emit('signal', candidate);
+      }
       this.emit('signal', signal);
     } catch (error) {
       this.log.warn('Ignoring invalid NetherNet signal message', error instanceof Error ? error.message : error);
@@ -386,7 +406,7 @@ class JsonRpcSignaling extends EventEmitter {
       privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
     });
     const key = await importPKCS8(privateKey as unknown as string, 'ES384');
-    const payload = JSON.stringify({ fingerprints: [{ algorithm: 'sha-256', digest: fingerprint }] });
+    const payload = JSON.stringify({ fingerprint: [{ algorithm: 'sha-256', digest: fingerprint }] });
     const signed = await new CompactSign(new TextEncoder().encode(payload))
       .setProtectedHeader({ alg: 'ES384' })
       .sign(key);
@@ -418,6 +438,15 @@ class JsonRpcSignaling extends EventEmitter {
       message: inner,
     }, messageId);
   }
+}
+
+function isUsableCandidate(candidate: string): boolean {
+  return !/(?:tcp|::1|127\.0\.0\.1)/i.test(candidate);
+}
+
+function withNetworkCost(signal: SignalLike, cost: number): SignalLike {
+  const data = signal.data.replace(/\s+network-cost\s+\d+\s*$/i, '').trim();
+  return new SignalStructure(SignalType.CandidateAdd, signal.connectionId, `${data} network-cost ${cost}`, signal.networkId);
 }
 
 function parseTurnServers(servers: any[]): unknown[] {
