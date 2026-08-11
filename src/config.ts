@@ -63,7 +63,7 @@ export function loadConfig(): AppConfig {
     realms: parseRealms(),
     realmsApi: {
       baseUrl: process.env.REALMS_API_BASE_URL?.trim() || 'https://pocket.realms.minecraft.net',
-      clientVersion: process.env.BEDROCK_VERSION?.trim() || '1.26.30',
+      clientVersion: process.env.BEDROCK_VERSION?.trim() || '1.26.40',
       storyEventsPathTemplate: process.env.REALM_STORY_EVENTS_PATH_TEMPLATE?.trim() || undefined,
     },
     dataDir,
