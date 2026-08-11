@@ -65,6 +65,18 @@ export function createNethernetClient(options: NethernetClientOptions): Netherne
   client.disableEncryption = true;
   client.encryptionEnabled = false;
 
+  let receivedPackets = 0;
+  client.on('packet', (packet: any) => {
+    if (receivedPackets >= 20) return;
+    receivedPackets += 1;
+    options.log.info(`Realm ${options.realm.id} Bedrock packet received`, {
+      packet: packet?.data?.name,
+      bytes: packet?.fullBuffer?.length,
+    });
+  });
+  client.on('loggingIn', () => options.log.info(`Realm ${options.realm.id} Bedrock login sent`));
+  client.on('join', () => options.log.info(`Realm ${options.realm.id} Bedrock login accepted`));
+
   // NetherNet already provides an authenticated encrypted WebRTC channel. The
   // RakNet ECDH/AES encryption must not be enabled for this transport. Keep
   // the normal handshake listeners, though: the server still expects the
