@@ -44,9 +44,17 @@ Realm IDはRealms APIまたはクライアントのRealm情報から確認しま
 1. Discord Developer PortalでApplicationを作成します。
 2. Botを追加し、Tokenを発行します。Tokenは `.env` にだけ保存し、公開リポジトリへコミットしません。
 3. `DISCORD_APPLICATION_ID` にApplication IDを設定します。
-4. BOTをサーバーへ招待します。Scopesは `bot` と `applications.commands`、権限は少なくとも通知先チャンネルの `View Channel` と `Send Messages` を付与します。
-5. `DISCORD_GUILD_ID` を設定してください。ロール紐付けと権限制御に必要で、ギルドコマンドとして即時反映されます。未設定の場合はグローバルコマンドになり、ロール機能は利用できません。
-6. ロール作成・付与を使う場合は、BOTに `Manage Roles` 権限を付与し、BOTの最高位ロールを作成対象ロールより上に配置します。
+4. BOTをサーバーへ招待します。Scopesは `bot` と `applications.commands` にします。
+5. BOT権限は次の最小構成にします。
+   - `View Channel`
+   - `Send Messages`
+   - `Embed Links`
+   - `Attach Files`
+   - `Read Message History`
+   - `Manage Roles`（`/player link`、`/player unlink`を使う場合）
+6. Developer PortalのBot設定で `Message Content Intent` を有効にしてください。`/location image add` が直後の画像投稿を受け取るために必要です。`Server Members Intent` と `Administrator` は必須ではありません。
+7. `DISCORD_GUILD_ID` を設定してください。ロール紐付けと権限制御に必要で、ギルドコマンドとして即時反映されます。未設定の場合はグローバルコマンドになり、ロール機能は利用できません。
+8. `Manage Roles` を付与する場合は、BOTの最高位ロールを作成対象ロールより上に配置します。`Mention Everyone`、`Manage Channels`、`Administrator` は使用しません。
 
 ## Microsoft/Xbox認証
 
