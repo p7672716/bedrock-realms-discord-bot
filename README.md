@@ -52,7 +52,7 @@ Realm IDはRealms APIまたはクライアントのRealm情報から確認しま
    - `Attach Files`
    - `Read Message History`
    - `Manage Roles`（`/player link`、`/player unlink`を使う場合）
-6. Developer PortalのBot設定で `Message Content Intent` を有効にしてください。`/location image add` が直後の画像投稿を受け取るために必要です。`Server Members Intent` と `Administrator` は必須ではありません。
+6. `/location image add` を使う場合は、Developer PortalのBot設定で `Message Content Intent` を有効にし、`.env` の `DISCORD_MESSAGE_CONTENT_INTENT=true` にしてください。未設定または`false`なら、特権IntentなしでBOTを起動できます。`Server Members Intent` と `Administrator` は必須ではありません。
 7. `DISCORD_GUILD_ID` を設定してください。ロール紐付けと権限制御に必要で、ギルドコマンドとして即時反映されます。未設定の場合はグローバルコマンドになり、ロール機能は利用できません。
 8. `Manage Roles` を付与する場合は、BOTの最高位ロールを作成対象ロールより上に配置します。`Mention Everyone`、`Manage Channels`、`Administrator` は使用しません。
 

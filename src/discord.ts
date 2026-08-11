@@ -113,7 +113,13 @@ const EVENT_ASSETS: EventAsset[] = EVENT_ASSET_FILES.map((fileName) => ({
 
 export class DiscordService {
   readonly client = new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMessages,
+      ...(process.env.DISCORD_MESSAGE_CONTENT_INTENT?.trim().toLowerCase() === 'true'
+        ? [GatewayIntentBits.MessageContent]
+        : []),
+    ],
   });
   private readonly commands;
   private readonly pendingLocationImageAdds = new Set<string>();
