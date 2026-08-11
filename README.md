@@ -26,6 +26,8 @@ Bedrock Realmsの基本API（Realm情報、接続先、オンラインプレイ�
 
 プレイヤー監視は標準で `PRESENCE_SOURCE=protocol` です。BOTが対象Realmへ参加するため、Realm内にBOTアカウントがオンラインプレイヤーとして見え、同時接続数を1枠使用します。これを避ける場合は `PRESENCE_SOURCE=api` に変更できますが、Bedrockの `/activities/live/players` は空の結果を返すことがあるため、厳密な監視にはprotocolモードを推奨します。
 
+最新のBedrock Realmが `/join` で `NETHERNET_JSONRPC` とUUID形式の `address` を返す場合は、Realm APIの応答を判定してNetherNet/WebRTCシグナリングへ自動的に切り替えます。従来の `DEFAULT` と `host:port` を返すRealmでは、従来どおりRakNetを使用します。NetherNet対応に必要なUDP/WebRTC通信がVMやネットワークで制限されている場合は、接続できないことがあります。
+
 ## 必要なもの
 
 - Node.js 22以上、またはDocker
@@ -125,6 +127,8 @@ docker compose logs -f bot
 6. `docker compose logs -f bot` でDiscord接続とRealm監視開始を確認します。
 
 VMのディスク上にある `data` ディレクトリを削除しないでください。削除するとMicrosoft認証キャッシュが失われ、監視状態も初期化されます。Discord Token、認証キャッシュ、Realm情報は公開リポジトリやIssueへ貼らないでください。
+
+NetherNet対応は、`bedrock-protocol`の現在のRakNet APIへ、固定コミットの`nethernet`実装とRealm用JSON-RPCシグナリングを接続しています。依存先の更新で接続仕様が変わる可能性があるため、`package-lock.json`の更新を伴わない依存更新は避けてください。
 
 ## 自動処理の範囲
 

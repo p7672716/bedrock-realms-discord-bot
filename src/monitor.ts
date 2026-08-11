@@ -32,7 +32,7 @@ export class RealmMonitor extends EventEmitter {
     this.baselinePending = new Set(this.config.realms.map((realm) => realm.id));
     if (this.config.presenceSource !== 'api') {
       for (const realm of this.config.realms) {
-        const connection = new BedrockRealmConnection(realm, this.config, this.log);
+        const connection = new BedrockRealmConnection(realm, this.config, this.api, this.log);
         connection.on('ready', () => void this.pollPresence(realm));
         this.connections.set(realm.id, connection);
         connection.start();

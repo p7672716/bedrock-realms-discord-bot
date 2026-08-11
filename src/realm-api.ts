@@ -56,9 +56,26 @@ export class RealmApiClient {
 
   async getJoinInfo(realmId: string): Promise<JoinInfo> {
     const raw = await this.request(`/worlds/${encodeURIComponent(realmId)}/join`);
-    const address = typeof raw?.address === 'string' ? raw.address : undefined;
+    const address = typeof raw?.address === 'string' ? raw.address.trim() || undefined : undefined;
     const parsed = parseAddress(address);
-    return { ...parsed, address, raw };
+    const sessionRegionData = raw?.sessionRegionData && typeof raw.sessionRegionData === 'object'
+      ? {
+          regionName: typeof raw.sessionRegionData.regionName === 'string'
+            ? raw.sessionRegionData.regionName.trim() || undefined
+            : undefined,
+          serviceQuality: typeof raw.sessionRegionData.serviceQuality === 'number' && Number.isFinite(raw.sessionRegionData.serviceQuality)
+            ? raw.sessionRegionData.serviceQuality
+            : undefined,
+        }
+      : undefined;
+    return {
+      ...parsed,
+      address,
+      region: sessionRegionData?.regionName || parsed.region,
+      networkProtocol: typeof raw?.networkProtocol === 'string' ? raw.networkProtocol.trim() || undefined : undefined,
+      sessionRegionData,
+      raw,
+    };
   }
 
   async getStoryEvents(realmId: string): Promise<RealmEvent[] | null> {

@@ -2,6 +2,8 @@ import { EventEmitter } from 'node:events';
 import bedrock from 'bedrock-protocol';
 import type { AppConfig, Player, RealmConfig } from './types.js';
 import type { Logger } from './logger.js';
+import type { RealmApiClient } from './realm-api.js';
+import { createNethernetClient } from './bedrock-nethernet-client.js';
 
 type Packet = Record<string, any>;
 type ClientLike = EventEmitter & {
@@ -9,6 +11,7 @@ type ClientLike = EventEmitter & {
   username?: string;
   close(): void;
   disconnect(reason?: string): void;
+  connect?(): void;
 };
 
 export class BedrockRealmConnection extends EventEmitter {
@@ -20,10 +23,12 @@ export class BedrockRealmConnection extends EventEmitter {
   private reconnectTimer?: NodeJS.Timeout;
   private reconnectAttempt = 0;
   private settleTimer?: NodeJS.Timeout;
+  private connecting = false;
 
   constructor(
     private readonly realm: RealmConfig,
     private readonly config: AppConfig,
+    private readonly api: RealmApiClient,
     private readonly log: Logger,
   ) {
     super();
@@ -31,7 +36,7 @@ export class BedrockRealmConnection extends EventEmitter {
 
   start(): void {
     this.stopped = false;
-    this.connect();
+    void this.connect();
   }
 
   stop(): void {
@@ -51,43 +56,76 @@ export class BedrockRealmConnection extends EventEmitter {
     return this.ready ? sortPlayers([...this.players.values()].filter((player) => !this.isSelf(player))) : null;
   }
 
-  private connect(): void {
-    if (this.stopped) return;
+  private async connect(): Promise<void> {
+    if (this.stopped || this.connecting) return;
+    this.connecting = true;
     this.ready = false;
     this.players.clear();
     try {
-      const client = bedrock.createClient({
-        username: this.config.auth.cacheKey,
-        profilesFolder: this.config.auth.cacheDir,
-        version: this.config.realmsApi.clientVersion as any,
-        realms: { realmId: this.realm.id },
-        raknetBackend: this.config.raknetBackend,
-        conLog: null,
-        onMsaCode: (code: any) => {
-          const uri = code.verification_uri || code.verificationUri || 'https://www.microsoft.com/link';
-          const userCode = code.user_code || code.userCode || 'unknown';
-          this.log.warn(`Microsoft authentication is required for Realm ${this.realm.id}. Open ${uri} and enter code ${userCode}.`);
-        },
-      } as any) as ClientLike;
-      this.client = client;
-      client.on('session', (profile: any) => {
-        this.ownProfile = profile;
-      });
-      client.on('player_list', (packet: Packet) => this.handlePlayerList(packet));
-      client.on('add_player', (packet: Packet) => this.addPlayer(packet));
-      client.on('remove_player', (packet: Packet) => this.removePlayer(packet));
-      client.on('spawn', () => this.onSpawn());
-      client.on('error', (error: unknown) => {
-        this.log.warn(`Bedrock connection error for Realm ${this.realm.id}`, error instanceof Error ? error.message : error);
-      });
-      client.on('kick', (packet: Packet) => {
-        this.log.warn(`Bedrock connection was kicked for Realm ${this.realm.id}`, packet?.message || packet);
-      });
-      client.on('close', () => this.onClose());
+      const joinInfo = await this.api.getJoinInfo(this.realm.id);
+      const protocol = joinInfo.networkProtocol?.toUpperCase();
+      let client: ClientLike;
+      if (protocol === 'NETHERNET_JSONRPC' || protocol === 'NETHERNET') {
+        if (!joinInfo.address) throw new Error(`Realm ${this.realm.id} did not return a NetherNet network ID`);
+        client = createNethernetClient({
+          realm: this.realm,
+          networkId: joinInfo.address,
+          version: this.config.realmsApi.clientVersion,
+          authflow: this.api.authflow,
+          username: this.config.auth.cacheKey,
+          profilesFolder: this.config.auth.cacheDir,
+          onMsaCode: (code: any) => this.onMsaCode(code),
+          log: this.log,
+        }) as ClientLike;
+      } else {
+        if (!joinInfo.host || !joinInfo.port) {
+          throw new Error(`Realm ${this.realm.id} returned unsupported join protocol ${joinInfo.networkProtocol || 'unknown'} without host:port`);
+        }
+        client = bedrock.createClient({
+          username: this.config.auth.cacheKey,
+          profilesFolder: this.config.auth.cacheDir,
+          version: this.config.realmsApi.clientVersion as any,
+          host: joinInfo.host,
+          port: joinInfo.port,
+          skipPing: true,
+          authflow: this.api.authflow,
+          raknetBackend: this.config.raknetBackend,
+          conLog: null,
+          onMsaCode: (code: any) => this.onMsaCode(code),
+        } as any) as ClientLike;
+      }
+      this.attachClient(client);
+      if (protocol === 'NETHERNET_JSONRPC' || protocol === 'NETHERNET') client.connect?.();
     } catch (error) {
       this.log.error(`Could not create Bedrock connection for Realm ${this.realm.id}`, error);
       this.scheduleReconnect();
+    } finally {
+      this.connecting = false;
     }
+  }
+
+  private attachClient(client: ClientLike): void {
+    this.client = client;
+    client.on('session', (profile: any) => {
+      this.ownProfile = profile;
+    });
+    client.on('player_list', (packet: Packet) => this.handlePlayerList(packet));
+    client.on('add_player', (packet: Packet) => this.addPlayer(packet));
+    client.on('remove_player', (packet: Packet) => this.removePlayer(packet));
+    client.on('spawn', () => this.onSpawn());
+    client.on('error', (error: unknown) => {
+      this.log.warn(`Bedrock connection error for Realm ${this.realm.id}`, error instanceof Error ? error.message : error);
+    });
+    client.on('kick', (packet: Packet) => {
+      this.log.warn(`Bedrock connection was kicked for Realm ${this.realm.id}`, packet?.message || packet);
+    });
+    client.on('close', () => this.onClose());
+  }
+
+  private onMsaCode(code: any): void {
+    const uri = code.verification_uri || code.verificationUri || 'https://www.microsoft.com/link';
+    const userCode = code.user_code || code.userCode || 'unknown';
+    this.log.warn(`Microsoft authentication is required for Realm ${this.realm.id}. Open ${uri} and enter code ${userCode}.`);
   }
 
   private onSpawn(): void {

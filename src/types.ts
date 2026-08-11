@@ -140,5 +140,10 @@ export type JoinInfo = {
   host?: string;
   port?: number;
   region?: string;
+  networkProtocol?: string;
+  sessionRegionData?: {
+    regionName?: string;
+    serviceQuality?: number;
+  };
   raw: unknown;
 };

@@ -16,10 +16,14 @@
     "check": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "jsonwebtoken": "^9.0.3",
+    "jose": "^6.2.8",
     "bedrock-protocol": "^3.58.0",
     "discord.js": "^14.27.0",
     "dotenv": "^17.4.2",
-    "prismarine-auth": "^3.1.1"
+    "nethernet": "https://github.com/LucienHH/node-nethernet/archive/bba297584bb8d548c1cbeef4733165f45d94084c.tar.gz",
+    "prismarine-auth": "^3.1.1",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
