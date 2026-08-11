@@ -353,7 +353,9 @@ class JsonRpcSignaling extends EventEmitter {
     try {
       const signal = SignalStructure.fromString(signalMessage);
       signal.networkId = String(param.From ?? this.serverNetworkId);
-      this.log.info(`Received NetherNet ${signal.type} signal from ${String(signal.networkId)}`);
+      this.log.info(`Received NetherNet ${signal.type} signal from ${String(signal.networkId)}`, {
+        data: signal.type === SignalType.ConnectResponse || signal.type === 'CONNECTERROR' ? signal.data.slice(0, 120) : undefined,
+      });
       if (signal.type === SignalType.CandidateAdd && !isUsableCandidate(signal.data)) return;
 
       // The Realm peer creates its ICE side after accepting the offer. Match
