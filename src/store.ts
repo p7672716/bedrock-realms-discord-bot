@@ -5,12 +5,14 @@ import type {
   LocationCreateInput,
   LocationImage,
   LocationUpdateInput,
+  DiscordPlayerLink,
   PersistedRealmState,
   PersistedState,
   Player,
   RealmEvent,
   SavedLocation,
 } from './types.js';
+import { playerMatchesLink, sanitizePlayerName } from './player.js';
 
 const emptyRealmState = (): PersistedRealmState => ({
   players: [],
@@ -22,7 +24,12 @@ const emptyRealmState = (): PersistedRealmState => ({
 });
 
 export class StateStore {
-  private state: PersistedState = { version: 1, realms: {} };
+  private state: PersistedState = {
+    version: 1,
+    realms: {},
+    discordPlayerLinks: [],
+    monitoringEnabled: true,
+  };
   private writeChain: Promise<void> = Promise.resolve();
   private readonly filePath: string;
 
@@ -46,10 +53,15 @@ export class StateStore {
             {
               ...emptyRealmState(),
               ...realm,
+              players: Array.isArray(realm.players)
+                ? realm.players.map((player) => ({ ...player, name: sanitizePlayerName(player.name) }))
+                : [],
               locations: Array.isArray(realm.locations) ? realm.locations : [],
             },
           ]),
         ),
+        discordPlayerLinks: Array.isArray(parsed.discordPlayerLinks) ? parsed.discordPlayerLinks : [],
+        monitoringEnabled: parsed.monitoringEnabled !== false,
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
@@ -63,6 +75,79 @@ export class StateStore {
     this.state.realms[realmId] ??= emptyRealmState();
     this.state.realms[realmId].locations ??= [];
     return this.state.realms[realmId];
+  }
+
+  isMonitoringEnabled(): boolean {
+    return this.state.monitoringEnabled;
+  }
+
+  setMonitoringEnabled(enabled: boolean): void {
+    this.state.monitoringEnabled = enabled;
+    void this.flush();
+  }
+
+  listDiscordPlayerLinks(guildId?: string): DiscordPlayerLink[] {
+    return this.state.discordPlayerLinks
+      .filter((link) => !guildId || link.guildId === guildId)
+      .map((link) => ({ ...link }));
+  }
+
+  getDiscordPlayerLink(guildId: string, realmId: string, discordUserId: string): DiscordPlayerLink | undefined {
+    return this.state.discordPlayerLinks.find((link) => (
+      link.guildId === guildId && link.realmId === realmId && link.discordUserId === discordUserId
+    ));
+  }
+
+  findDiscordPlayerLinkForPlayer(realmId: string, player: Player, guildId?: string): DiscordPlayerLink | undefined {
+    return this.state.discordPlayerLinks.find((link) => (
+      link.realmId === realmId
+      && (!guildId || link.guildId === guildId)
+      && playerMatchesLink(player, link)
+    ));
+  }
+
+  findDiscordPlayerLinkForPlayerName(realmId: string, playerName: string, guildId?: string): DiscordPlayerLink | undefined {
+    return this.state.discordPlayerLinks.find((link) => (
+      link.realmId === realmId
+      && (!guildId || link.guildId === guildId)
+      && playerMatchesLink({ id: playerName, name: playerName, source: 'realms-api' }, link)
+    ));
+  }
+
+  createDiscordPlayerLink(link: DiscordPlayerLink): DiscordPlayerLink {
+    const duplicateUser = this.state.discordPlayerLinks.some((existing) => (
+      existing.guildId === link.guildId
+      && existing.realmId === link.realmId
+      && existing.discordUserId === link.discordUserId
+    ));
+    if (duplicateUser) throw new Error('PLAYER_LINK_USER_ALREADY_EXISTS');
+    const duplicatePlayer = this.state.discordPlayerLinks.some((existing) => (
+      existing.guildId === link.guildId
+      && existing.realmId === link.realmId
+      && (
+        existing.playerId === link.playerId
+        || (link.xuid && existing.xuid === link.xuid)
+        || (link.uuid && existing.uuid === link.uuid)
+        || playerMatchesLink({ id: link.playerId, name: link.playerName, xuid: link.xuid, uuid: link.uuid, source: 'realms-api' }, existing)
+      )
+    ));
+    if (duplicatePlayer) throw new Error('PLAYER_LINK_PLAYER_ALREADY_EXISTS');
+    this.state.discordPlayerLinks.push({ ...link });
+    void this.flush();
+    return { ...link };
+  }
+
+  deleteDiscordPlayerLink(guildId: string, realmId: string, discordUserId: string, playerName?: string): DiscordPlayerLink {
+    const index = this.state.discordPlayerLinks.findIndex((link) => (
+      link.guildId === guildId
+      && link.realmId === realmId
+      && link.discordUserId === discordUserId
+      && (!playerName || playerMatchesLink({ id: playerName, name: playerName, source: 'realms-api' }, link))
+    ));
+    if (index < 0) throw new Error('PLAYER_LINK_NOT_FOUND');
+    const [removed] = this.state.discordPlayerLinks.splice(index, 1);
+    void this.flush();
+    return { ...removed };
   }
 
   listLocations(realmId: string): SavedLocation[] {

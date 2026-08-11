@@ -5,22 +5,22 @@
 ## 入室通知
 
 ```text
-🟢 Alexがログインしました。
-現在：Alex, Steve, CreeperHunter
+🟢 Alex（Alex）がログインしました。
+現在：Alex（Alex）, Steve（Steve）, CreeperHunter（未紐付け）
 ```
 
 ## 退室通知
 
 ```text
-🔴 Steveがログアウトしました。
-現在：Alex, CreeperHunter
+🔴 Steve（Steve）がログアウトしました。
+現在：Alex（Alex）, CreeperHunter（未紐付け）
 ```
 
 ## Realmイベント通知
 
 ```text
 ダイヤモンドを発見しました
-達成者：Alex
+達成者：Alex（Alex）
 座標：120, 64, -35
 ```
 
@@ -30,7 +30,7 @@
 
 ```text
 オンライン人数：3
-プレイヤー：Alex, Steve, CreeperHunter
+プレイヤー：Alex（Alex）, Steve（Steve）, CreeperHunter（未紐付け）
 ```
 
 ## `/realm`
@@ -62,7 +62,7 @@ Realm側の権限やAPIの応答に含まれない情報は、次のように表
 名称：拠点
 座標：120, 64, -35
 ディメンション：オーバーワールド
-作成者：Alex
+作成者：Alex（Alex）
 備考：倉庫とネザーゲート
 ```
 
@@ -95,7 +95,7 @@ Realm側の権限やAPIの応答に含まれない情報は、次のように表
 名称：拠点
 座標：120, 64, -35
 ディメンション：オーバーワールド
-作成者：Alex
+作成者：Alex（Alex）
 備考：倉庫とネザーゲート
 画像：
 - 1. [拠点全体.png](https://cdn.example.com/base.png)
@@ -157,4 +157,29 @@ Realm側の権限やAPIの応答に含まれない情報は、次のように表
 
 ```text
 /location image remove target:新拠点 image_index:1
+```
+
+## `/player link`
+
+```text
+/player link player_name:Alex role_name:建築担当
+```
+
+```text
+プレイヤー「Alex（建築担当）」とDiscordアカウントを紐づけました。専用ロールはメンション不可です。
+```
+
+## `/monitor status`
+
+```text
+監視状態：有効
+認証状態：認証が必要
+認証URL：https://www.microsoft.com/link
+コード：ABCD1234
+```
+
+監視用アカウントがゲーム内で使用中の場合は、次のエラーを表示します。
+
+```text
+監視用アカウントはMinecraft本体または別端末で使用中のため、BOTがRealmへログインできません。Minecraftからログアウトしてから `/monitor login` を再実行してください。
 ```

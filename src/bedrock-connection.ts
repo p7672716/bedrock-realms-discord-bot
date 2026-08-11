@@ -1,9 +1,10 @@
 import { EventEmitter } from 'node:events';
 import bedrock from 'bedrock-protocol';
-import type { AppConfig, Player, RealmConfig } from './types.js';
+import type { AppConfig, AuthPrompt, Player, RealmConfig } from './types.js';
 import type { Logger } from './logger.js';
 import type { RealmApiClient } from './realm-api.js';
 import { createNethernetClient } from './bedrock-nethernet-client.js';
+import { normalizeBedrockPlayerName, normalizePlayerKey } from './player.js';
 
 type Packet = Record<string, any>;
 type ClientLike = EventEmitter & {
@@ -102,6 +103,7 @@ export class BedrockRealmConnection extends EventEmitter {
       this.attachClient(client);
       if (protocol === 'NETHERNET_JSONRPC' || protocol === 'NETHERNET') client.connect?.();
     } catch (error) {
+      if (isLikelyAccountInUse(error)) this.emit('account-in-use', accountInUseReason(error));
       this.log.error(`Could not create Bedrock connection for Realm ${this.realm.id}`, error);
       this.scheduleReconnect();
     } finally {
@@ -119,9 +121,11 @@ export class BedrockRealmConnection extends EventEmitter {
     client.on('remove_player', (packet: Packet) => this.removePlayer(packet));
     client.on('spawn', () => this.onSpawn());
     client.on('error', (error: unknown) => {
+      if (isLikelyAccountInUse(error)) this.emit('account-in-use', accountInUseReason(error));
       this.log.warn(`Bedrock connection error for Realm ${this.realm.id}`, error instanceof Error ? error.message : error);
     });
     client.on('kick', (packet: Packet) => {
+      if (isLikelyAccountInUse(packet?.message)) this.emit('account-in-use', accountInUseReason(packet?.message));
       this.log.warn(`Bedrock connection was kicked for Realm ${this.realm.id}`, packet?.message || packet);
     });
     client.on('close', () => this.onClose());
@@ -130,6 +134,14 @@ export class BedrockRealmConnection extends EventEmitter {
   private onMsaCode(code: any): void {
     const uri = code.verification_uri || code.verificationUri || 'https://www.microsoft.com/link';
     const userCode = code.user_code || code.userCode || 'unknown';
+    const prompt: AuthPrompt = {
+      verificationUri: String(uri),
+      userCode: String(userCode),
+      message: typeof code.message === 'string' ? code.message : undefined,
+      realmId: this.realm.id,
+      occurredAt: new Date().toISOString(),
+    };
+    this.emit('auth-required', prompt);
     this.log.warn(`Microsoft authentication is required for Realm ${this.realm.id}. Open ${uri} and enter code ${userCode}.`);
   }
 
@@ -173,11 +185,14 @@ export class BedrockRealmConnection extends EventEmitter {
 
   private addPlayer(packet: Packet): void {
     const rawId = packet.xbox_user_id ?? packet.xuid ?? packet.player_id ?? packet.uuid ?? packet.unique_id;
-    if (rawId === undefined && !packet.username) return;
-    const id = String(rawId ?? packet.username);
+    const name = [packet.username, packet.name, packet.displayName]
+      .map((value) => normalizeBedrockPlayerName(value))
+      .find((value): value is string => Boolean(value)) || '不明なプレイヤー';
+    if (rawId === undefined && name === '不明なプレイヤー') return;
+    const id = String(rawId ?? name);
     const player: Player = {
       id,
-      name: String(packet.username ?? packet.name ?? id),
+      name,
       xuid: packet.xbox_user_id === undefined ? undefined : String(packet.xbox_user_id),
       uuid: packet.uuid === undefined ? undefined : String(packet.uuid),
       source: 'bedrock-protocol',
@@ -200,11 +215,21 @@ export class BedrockRealmConnection extends EventEmitter {
     return Boolean(
       (profile?.xuid && player.xuid === String(profile.xuid)) ||
       (profile?.uuid && player.uuid === String(profile.uuid)) ||
-      (profile?.name && player.name === profile.name),
+      (profile?.name && normalizePlayerKey(player.name) === normalizePlayerKey(profile.name)),
     );
   }
 }
 
 function sortPlayers(players: Player[]): Player[] {
   return players.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+}
+
+function isLikelyAccountInUse(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error ?? '');
+  return /(already\s+(?:logged|connected|playing)|another\s+(?:device|session)|duplicate\s+(?:login|session)|blaze|account.*(?:in use|use)|session.*(?:active|in use))/i.test(text);
+}
+
+function accountInUseReason(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error ?? '');
+  return text.trim() || 'Minecraftまたは別端末で監視用アカウントが使用されています。';
 }

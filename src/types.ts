@@ -70,6 +70,7 @@ export type SavedLocation = {
   createdBy: {
     id: string;
     name: string;
+    roleId?: string;
   };
   createdAt: string;
   updatedAt: string;
@@ -112,6 +113,28 @@ export type PersistedRealmState = {
 export type PersistedState = {
   version: 1;
   realms: Record<string, PersistedRealmState>;
+  discordPlayerLinks: DiscordPlayerLink[];
+  monitoringEnabled: boolean;
+};
+
+export type DiscordPlayerLink = {
+  guildId: string;
+  realmId: string;
+  discordUserId: string;
+  playerId: string;
+  playerName: string;
+  xuid?: string;
+  uuid?: string;
+  roleId: string;
+  createdAt: string;
+};
+
+export type AuthPrompt = {
+  verificationUri: string;
+  userCode: string;
+  message?: string;
+  realmId?: string;
+  occurredAt: string;
 };
 
 export type PresenceChange = {

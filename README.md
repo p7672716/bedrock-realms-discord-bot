@@ -13,6 +13,8 @@ Minecraft Bedrock Edition のRealmを監視し、プレイヤーの入退室と�
 - 起動時の既存プレイヤーを入室扱いしないベースライン処理
 - JSONファイルによる通知済みイベントと監視状態の永続化
 - `/online` `/realm` `/location`
+- DiscordアカウントとMinecraftプレイヤーの専用ロール紐付け（ロールID参照）
+- `/monitor login` `/monitor logout` `/monitor status` による監視用アカウント制御
 - Realmごとの保存地点管理（保存・一覧・検索・詳細表示・項目編集・画像管理）
 - 保存地点の名称重複防止、座標、ディメンション、備考、作成者、画像の永続化
 - 指定形式の入退室通知とRealm Event通知（同梱した公式準拠画像を対応イベントに添付）
@@ -43,13 +45,16 @@ Realm IDはRealms APIまたはクライアントのRealm情報から確認しま
 2. Botを追加し、Tokenを発行します。Tokenは `.env` にだけ保存し、公開リポジトリへコミットしません。
 3. `DISCORD_APPLICATION_ID` にApplication IDを設定します。
 4. BOTをサーバーへ招待します。Scopesは `bot` と `applications.commands`、権限は少なくとも通知先チャンネルの `View Channel` と `Send Messages` を付与します。
-5. 開発中は `DISCORD_GUILD_ID` を設定してください。ギルドコマンドとして即時反映されます。未設定の場合はグローバルコマンドになり、反映に時間がかかることがあります。
+5. `DISCORD_GUILD_ID` を設定してください。ロール紐付けと権限制御に必要で、ギルドコマンドとして即時反映されます。未設定の場合はグローバルコマンドになり、ロール機能は利用できません。
+6. ロール作成・付与を使う場合は、BOTに `Manage Roles` 権限を付与し、BOTの最高位ロールを作成対象ロールより上に配置します。
 
 ## Microsoft/Xbox認証
 
 初回起動時にログへMicrosoftのdevice codeが表示されます。表示されたURLをブラウザで開き、コードを入力してください。認証トークンは `DATA_DIR/auth` にキャッシュされ、通常の再起動では再認証を要求されません。
 
 認証に使うアカウントはRealmオーナーである必要はありません。対象Realmに参加できる通常参加者であれば、アカウントに許可された範囲で動作します。認証キャッシュを失う、またはMicrosoft側で再認証が必要になった場合は、再度device code認証を行います。
+
+監視用アカウントをMinecraft本体で遊ぶ場合は、先に `/monitor logout` で監視を停止してください。監視中に同じアカウントを別端末やMinecraft本体で使用すると、Realm側のセッション競合でBOTが接続できず、「監視用アカウントはMinecraft本体または別端末で使用中」と表示されます。使用を終えたらMinecraftからログアウトし、`/monitor login` を実行してください。ログアウト後の再ログインではdevice code認証が必要になる場合があります。
 
 ## 設定
 
@@ -136,12 +141,40 @@ NetherNet対応は、`bedrock-protocol`の現在のRakNet APIへ、固定コミ�
 
 イベント監視は起動時に取得した履歴を通知せず、現在値をベースラインとして保存します。その後に現れたイベントだけを通知し、`data/state.json` に保存したイベントIDで重複通知を防ぎます。
 
+## Discordアカウントとプレイヤーの紐付け
+
+コマンドの実行には、対象RealmのMinecraftプレイヤーとDiscordアカウントを紐付けた専用ロールが必要です。初回設定だけはDiscordサーバーの管理者（`Administrator` または `Manage Server`）が実行できます。
+
+```text
+/player link player_name:<Minecraftプレイヤー名> [role_name:<ロール名>] [realm:<Realm>]
+/player unlink player_name:<Minecraftプレイヤー名> [realm:<Realm>]
+```
+
+`role_name` を省略すると、紐付けを実行したDiscordアカウント名でロールを作成します。ロールはメンション不可で作成され、BOTもロールやユーザーをメンションしません。動作上はロール名ではなくDiscordユーザーID・ロールID・Minecraft側の識別子を保存するため、後からロール名を変更しても紐付けは壊れません。
+
+オンライン一覧、入退室通知、Realmイベント、保存地点の作成者は `プレイヤー名（ロール名）` の形式で表示します。ロールが見つからない既存データは `プレイヤー名（未紐付け）` と表示されます。Bedrock側から表示名の代わりにUUIDやpersona内部識別子が届いた場合は、内部識別子を表示せず `不明なプレイヤー` として扱います。
+
+## 監視用アカウントの制御
+
+```text
+/monitor login
+/monitor logout
+/monitor status
+```
+
+`/monitor login` は監視を有効化してRealm接続を開始します。`/monitor logout` はRealm接続を停止するオン/オフ操作で、認証キャッシュは保持します。`/monitor status` で `接続中`、`認証が必要`、`アカウント使用中で接続失敗` などの状態とdevice codeを確認できます。監視が必要な `/online` と `/realm` は、監視用アカウントがログアウト中・認証待ち・他端末で使用中の場合は実行できません。
+
 ## スラッシュコマンド
 
 | コマンド | 内容 |
 | --- | --- |
 | `/online` | 現在オンラインのプレイヤーと人数 |
 | `/realm` | Realm名、ID、状態、説明、最大人数、難易度、接続情報 |
+| `/player link` | MinecraftプレイヤーとDiscordアカウントを紐付け、専用ロールを作成・付与します（初回は管理者のみ） |
+| `/player unlink` | プレイヤーとの紐付けを解除し、専用ロールを外します |
+| `/monitor login` | 監視を有効化してRealm接続を開始します |
+| `/monitor logout` | 監視を停止し、監視用アカウントをログアウトします |
+| `/monitor status` | 監視・認証状態と必要なdevice codeを表示します |
 | `/location save` | 名称付きの座標を保存します。ディメンション省略時はオーバーワールドです |
 | `/location list` | ディメンション別に保存地点名を一覧表示します |
 | `/location search` | 名称または備考を検索します |

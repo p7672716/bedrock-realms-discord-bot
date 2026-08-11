@@ -1,8 +1,11 @@
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
+import fs from 'node:fs/promises';
+import { EventEmitter } from 'node:events';
 import type { Authflow as AuthflowType } from 'prismarine-auth';
 import type {
   AppConfig,
+  AuthPrompt,
   JoinInfo,
   Player,
   RealmConfig,
@@ -10,30 +13,51 @@ import type {
   RealmInfo,
 } from './types.js';
 import type { Logger } from './logger.js';
+import { sanitizePlayerName } from './player.js';
 
 const require = createRequire(import.meta.url);
 const { Authflow, Titles } = require('prismarine-auth') as typeof import('prismarine-auth');
 
 type JsonObject = Record<string, any>;
 
-export class RealmApiClient {
-  readonly authflow: AuthflowType;
+export class RealmApiClient extends EventEmitter {
+  private authflowInstance: AuthflowType;
   private readonly baseUrl: string;
 
   constructor(private readonly config: AppConfig, private readonly log: Logger) {
+    super();
     this.baseUrl = config.realmsApi.baseUrl.replace(/\/$/, '');
-    this.authflow = new Authflow(
-      config.auth.cacheKey,
-      config.auth.cacheDir,
+    this.authflowInstance = this.createAuthflow();
+  }
+
+  get authflow(): AuthflowType {
+    return this.authflowInstance;
+  }
+
+  async logout(): Promise<void> {
+    await fs.rm(this.config.auth.cacheDir, { recursive: true, force: true });
+    await fs.mkdir(this.config.auth.cacheDir, { recursive: true });
+    this.authflowInstance = this.createAuthflow();
+  }
+
+  private createAuthflow(): AuthflowType {
+    return new Authflow(
+      this.config.auth.cacheKey,
+      this.config.auth.cacheDir,
       {
         flow: 'live',
         authTitle: Titles.MinecraftNintendoSwitch,
         deviceType: 'Nintendo',
       } as any,
       (code: any) => {
-        const uri = code.verification_uri || code.verificationUri || 'https://www.microsoft.com/link';
-        const userCode = code.user_code || code.userCode || 'unknown';
-        this.log.warn(`Microsoft authentication is required. Open ${uri} and enter code ${userCode}.`);
+        const prompt: AuthPrompt = {
+          verificationUri: String(code.verification_uri || code.verificationUri || 'https://www.microsoft.com/link'),
+          userCode: String(code.user_code || code.userCode || 'unknown'),
+          message: typeof code.message === 'string' ? code.message : undefined,
+          occurredAt: new Date().toISOString(),
+        };
+        this.emit('auth-required', prompt);
+        this.log.warn(`Microsoft authentication is required. Open ${prompt.verificationUri} and enter code ${prompt.userCode}.`);
       },
     );
   }
@@ -161,7 +185,7 @@ function mapPlayer(raw: JsonObject, source: Player['source']): Player {
   const id = String(xuid ?? raw.name ?? raw.id ?? 'unknown');
   return {
     id,
-    name: String(raw.name ?? raw.displayName ?? id),
+    name: sanitizePlayerName(raw.name ?? raw.displayName),
     xuid: xuid === undefined ? undefined : String(xuid),
     uuid: uuid === undefined ? undefined : String(uuid),
     source,

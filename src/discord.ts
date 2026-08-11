@@ -5,20 +5,24 @@ import {
   Client,
   EmbedBuilder,
   GatewayIntentBits,
+  PermissionFlagsBits,
   REST,
   Routes,
   SlashCommandBuilder,
   type SlashCommandSubcommandBuilder,
   type SlashCommandSubcommandsOnlyBuilder,
   type ChatInputCommandInteraction,
+  type Guild,
   type Message,
 } from 'discord.js';
 import type { Logger } from './logger.js';
 import { RealmApiClient } from './realm-api.js';
 import { RealmMonitor } from './monitor.js';
+import type { MonitorStatus } from './monitor.js';
 import { StateStore } from './store.js';
 import type {
   AppConfig,
+  DiscordPlayerLink,
   Dimension,
   JoinInfo,
   LocationImage,
@@ -29,6 +33,7 @@ import type {
   RealmInfo,
   SavedLocation,
 } from './types.js';
+import { normalizePlayerKey, sanitizePlayerName } from './player.js';
 
 type DiscordMessage = {
   content?: string;
@@ -148,14 +153,15 @@ export class DiscordService {
       return;
     }
     const sections: string[] = [];
+    const current = await this.formatPlayerNames(change.realmId, change.current);
     if (change.joined.length > 0) {
       for (const player of change.joined) {
-        sections.push(`🟢 ${player.name}がログインしました。\n現在：${formatPlayerNames(change.current)}`);
+        sections.push(`🟢 ${await this.formatPlayerLabel(change.realmId, player)}がログインしました。\n現在：${current}`);
       }
     }
     if (change.left.length > 0) {
       for (const player of change.left) {
-        sections.push(`🔴 ${player.name}がログアウトしました。\n現在：${formatPlayerNames(change.current)}`);
+        sections.push(`🔴 ${await this.formatPlayerLabel(change.realmId, player)}がログアウトしました。\n現在：${current}`);
       }
     }
     for (const content of sections) await this.sendToChannel(channelId, { content });
@@ -168,7 +174,7 @@ export class DiscordService {
       this.log.warn(`No notification channel configured for Realm ${event.realmId}`);
       return;
     }
-    const message: DiscordMessage = { content: formatEventMessage(event) };
+    const message: DiscordMessage = { content: await this.formatEventMessage(event) };
     const asset = resolveEventAsset(event);
     if (asset) {
       message.files = [new AttachmentBuilder(asset.path, { name: asset.fileName })];
@@ -178,18 +184,32 @@ export class DiscordService {
   }
 
   private async handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+    const subcommand = interaction.options.getSubcommand(false);
+    if (interaction.commandName === 'monitor') {
+      try {
+        await this.assertCommandAccess(interaction);
+        await interaction.deferReply({ ephemeral: true });
+        await this.handleMonitorCommand(interaction, subcommand);
+      } catch (error) {
+        await this.replyCommandError(interaction, error);
+      }
+      return;
+    }
     const realm = this.resolveCommandRealm(interaction);
     if (!realm) {
       await interaction.reply({ content: '監視対象Realmを指定してください。', ephemeral: true });
       return;
     }
-    await interaction.deferReply({ ephemeral: true });
     try {
+      await this.assertCommandAccess(interaction, realm.id);
+      await interaction.deferReply({ ephemeral: true });
       switch (interaction.commandName) {
         case 'online':
-          await interaction.editReply({ content: this.onlineMessage(this.monitor.getPlayers(realm.id)) });
+          await this.assertMonitoringReady();
+          await interaction.editReply({ content: await this.onlineMessage(realm.id, this.monitor.getPlayers(realm.id)) });
           break;
         case 'realm': {
+          await this.assertMonitoringReady();
           const [info, joinInfo] = await Promise.all([
             this.api.getRealm(realm.id),
             this.api.getJoinInfo(realm.id),
@@ -200,16 +220,137 @@ export class DiscordService {
         case 'location':
           await this.handleLocationCommand(interaction, realm);
           break;
+        case 'player':
+          await this.handlePlayerCommand(interaction, realm);
+          break;
         default:
           await interaction.editReply({ content: '未対応のコマンドです。' });
       }
     } catch (error) {
       this.log.warn(`Discord command failed: ${interaction.commandName}`, error instanceof Error ? error.message : error);
-      const message = interaction.commandName === 'location'
-        ? formatLocationError(error)
-        : `Realm情報を取得できませんでした: ${limit(error instanceof Error ? error.message : String(error))}`;
-      await interaction.editReply({ content: message });
+      await this.replyCommandError(interaction, error);
     }
+  }
+
+  private async handleMonitorCommand(interaction: ChatInputCommandInteraction, subcommand: string | null): Promise<void> {
+    if (subcommand === 'login') {
+      await this.monitor.enable();
+      await interaction.editReply({ content: formatMonitorLoginMessage(this.monitor.getStatus()) });
+      return;
+    }
+    if (subcommand === 'logout') {
+      await this.monitor.disable();
+      await interaction.editReply({ content: '監視を停止しました。監視が必要な機能は無効です。認証情報は保持されるため、再開時は `/monitor login` を実行してください。' });
+      return;
+    }
+    if (subcommand === 'status') {
+      await interaction.editReply({ content: formatMonitorStatus(this.monitor.getStatus()) });
+      return;
+    }
+    throw new Error('MONITOR_SUBCOMMAND_UNKNOWN');
+  }
+
+  private async handlePlayerCommand(interaction: ChatInputCommandInteraction, realm: RealmConfig): Promise<void> {
+    const subcommand = interaction.options.getSubcommand();
+    const guild = await this.requireGuild(interaction);
+    const member = await guild.members.fetch(interaction.user.id);
+    const playerNameInput = requiredOptionString(interaction, 'player_name');
+    if (subcommand === 'link') {
+      const livePlayer = this.monitor.getPlayers(realm.id).find((player) => (
+        normalizePlayerKey(player.name) === normalizePlayerKey(playerNameInput)
+      ));
+      const playerName = livePlayer?.name || sanitizePlayerName(playerNameInput);
+      if (!playerName || playerName === '不明なプレイヤー') throw new Error('PLAYER_NAME_INVALID');
+      const roleName = (interaction.options.getString('role_name') || interaction.user.globalName || interaction.user.username).trim();
+      if (!roleName) throw new Error('PLAYER_ROLE_NAME_REQUIRED');
+
+      let role;
+      try {
+        role = await guild.roles.create({
+          name: roleName.slice(0, 100),
+          mentionable: false,
+          hoist: false,
+          reason: `Minecraft player link for ${playerName}`,
+        });
+        await member.roles.add(role, 'Minecraft player link');
+        this.store.createDiscordPlayerLink({
+          guildId: guild.id,
+          realmId: realm.id,
+          discordUserId: interaction.user.id,
+          playerId: livePlayer?.id || normalizePlayerKey(playerName),
+          playerName,
+          xuid: livePlayer?.xuid,
+          uuid: livePlayer?.uuid,
+          roleId: role.id,
+          createdAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        if (role) await role.delete('Failed to create Minecraft player link').catch(() => undefined);
+        if (error instanceof Error && /^PLAYER_LINK_/.test(error.message)) throw error;
+        throw new Error('PLAYER_ROLE_CREATE_FAILED');
+      }
+      await interaction.editReply({ content: `プレイヤー「${playerName}（${role.name}）」とDiscordアカウントを紐づけました。専用ロールはメンション不可です。` });
+      return;
+    }
+    if (subcommand === 'unlink') {
+      const link = this.store.getDiscordPlayerLink(guild.id, realm.id, interaction.user.id);
+      if (!link) throw new Error('PLAYER_LINK_NOT_FOUND');
+      const removed = this.store.deleteDiscordPlayerLink(guild.id, realm.id, interaction.user.id, playerNameInput);
+      await member.roles.remove(removed.roleId, 'Minecraft player link removed').catch(() => undefined);
+      await interaction.editReply({ content: `プレイヤー「${removed.playerName}」との紐づけを解除しました。` });
+      return;
+    }
+    throw new Error('PLAYER_SUBCOMMAND_UNKNOWN');
+  }
+
+  private async assertCommandAccess(interaction: ChatInputCommandInteraction, realmId?: string): Promise<void> {
+    const command = interaction.commandName;
+    const subcommand = interaction.options.getSubcommand(false);
+    if (command === 'player' && subcommand === 'link' && await this.isGuildManager(interaction)) return;
+    const guild = await this.requireGuild(interaction);
+    const links = realmId
+      ? [this.store.getDiscordPlayerLink(guild.id, realmId, interaction.user.id)].filter((link): link is DiscordPlayerLink => Boolean(link))
+      : this.store.listDiscordPlayerLinks(guild.id).filter((link) => link.discordUserId === interaction.user.id);
+    const link = links[0];
+    if (!link) throw new Error('COMMAND_ROLE_REQUIRED');
+    const member = await guild.members.fetch(interaction.user.id);
+    if (!member.roles.cache.has(link.roleId)) throw new Error('COMMAND_ROLE_REQUIRED');
+    const role = await guild.roles.fetch(link.roleId).catch(() => null);
+    if (!role) throw new Error('COMMAND_ROLE_REQUIRED');
+  }
+
+  private async assertMonitoringReady(): Promise<void> {
+    const status = this.monitor.getStatus();
+    if (!status.enabled) throw new Error('MONITOR_DISABLED');
+    if (status.state === 'auth-required') throw new Error('MONITOR_ACCOUNT_LOGGED_OUT');
+    if (status.state === 'account-in-use') throw new Error('MONITOR_ACCOUNT_IN_USE');
+    if (status.state !== 'ready') throw new Error('MONITOR_NOT_READY');
+  }
+
+  private async isGuildManager(interaction: ChatInputCommandInteraction): Promise<boolean> {
+    try {
+      const member = await (await this.requireGuild(interaction)).members.fetch(interaction.user.id);
+      return member.permissions.has(PermissionFlagsBits.Administrator) || member.permissions.has(PermissionFlagsBits.ManageGuild);
+    } catch {
+      return false;
+    }
+  }
+
+  private async requireGuild(interaction: ChatInputCommandInteraction): Promise<Guild> {
+    const guildId = this.config.discord.guildId;
+    if (!guildId) throw new Error('DISCORD_GUILD_REQUIRED');
+    if (interaction.guildId && interaction.guildId !== guildId) throw new Error('DISCORD_GUILD_INVALID');
+    return interaction.guild || await this.client.guilds.fetch(guildId);
+  }
+
+  private async replyCommandError(interaction: ChatInputCommandInteraction, error: unknown): Promise<void> {
+    this.log.warn(`Discord command failed: ${interaction.commandName}`, error instanceof Error ? error.message : error);
+    const code = error instanceof Error ? error.message : String(error);
+    const message = interaction.commandName === 'location'
+      ? formatLocationError(error)
+      : formatCommandError(code);
+    if (interaction.deferred || interaction.replied) await interaction.editReply({ content: message });
+    else await interaction.reply({ content: message, ephemeral: true });
   }
 
   private async handleLocationCommand(interaction: ChatInputCommandInteraction, realm: RealmConfig): Promise<void> {
@@ -262,7 +403,7 @@ export class DiscordService {
     if (subcommand === 'show') {
       const location = this.store.getLocation(realm.id, requiredOptionString(interaction, 'name'));
       if (!location) throw new Error('LOCATION_NOT_FOUND');
-      await interaction.editReply({ content: formatLocationShowMessage(location) });
+      await interaction.editReply({ content: await this.formatLocationShowMessage(realm.id, location) });
       return;
     }
     if (subcommand === 'save') {
@@ -274,9 +415,9 @@ export class DiscordService {
         dimension: parseDimension(interaction.options.getString('dimension')),
         note: interaction.options.getString('note') || undefined,
         images: collectLocationImages(interaction),
-        createdBy: interactionUser(interaction),
+        createdBy: this.interactionUser(interaction, realm.id),
       });
-      await interaction.editReply({ content: formatLocationSavedMessage('保存しました', location) });
+      await interaction.editReply({ content: await this.formatLocationSavedMessage(realm.id, '保存しました', location) });
       return;
     }
     if (subcommand === 'edit') {
@@ -307,7 +448,7 @@ export class DiscordService {
           throw new Error('LOCATION_FIELD_INVALID');
       }
       const location = this.store.updateLocation(realm.id, target, patch);
-      await interaction.editReply({ content: formatLocationSavedMessage('更新しました', location) });
+      await interaction.editReply({ content: await this.formatLocationSavedMessage(realm.id, '更新しました', location) });
       return;
     }
     throw new Error('LOCATION_SUBCOMMAND_UNKNOWN');
@@ -349,13 +490,13 @@ export class DiscordService {
     if (!channel || !channel.isTextBased() || !('send' in channel)) {
       throw new Error(`Discord channel ${channelId} is not a text channel`);
     }
-    await channel.send(payload as any);
+    await channel.send({ ...payload, allowedMentions: { parse: [] } } as any);
   }
 
-  private onlineMessage(players: Player[]): string {
+  private async onlineMessage(realmId: string, players: Player[]): Promise<string> {
     return [
       `オンライン人数：${players.length}`,
-      `プレイヤー：${limit(formatPlayerNames(players), 1900)}`,
+      `プレイヤー：${limit(await this.formatPlayerNames(realmId, players), 1900)}`,
     ].join('\n');
   }
 
@@ -371,6 +512,97 @@ export class DiscordService {
       `ポート：${joinInfo.port ?? '不明'}`,
       `リージョン：${joinInfo.region || 'ホスト名から判定できませんでした'}`,
     ].join('\n');
+  }
+
+  private interactionUser(interaction: ChatInputCommandInteraction, realmId: string): SavedLocation['createdBy'] {
+    const link = this.config.discord.guildId
+      ? this.store.getDiscordPlayerLink(this.config.discord.guildId, realmId, interaction.user.id)
+      : undefined;
+    return {
+      id: interaction.user.id,
+      name: link?.playerName || interaction.user.globalName || interaction.user.username,
+      roleId: link?.roleId,
+    };
+  }
+
+  private async formatPlayerNames(realmId: string, players: Player[]): Promise<string> {
+    const labels = [] as string[];
+    for (const player of players) labels.push(await this.formatPlayerLabel(realmId, player));
+    return labels.length === 0 ? 'なし' : labels.join(', ');
+  }
+
+  private async formatPlayerLabel(realmId: string, player: Player): Promise<string> {
+    const link = this.config.discord.guildId
+      ? this.store.findDiscordPlayerLinkForPlayer(realmId, player, this.config.discord.guildId)
+      : undefined;
+    const roleName = await this.roleName(link?.roleId);
+    return `${sanitizePlayerName(player.name)}（${roleName || '未紐付け'}）`;
+  }
+
+  private async formatLocationSavedMessage(realmId: string, action: string, location: SavedLocation): Promise<string> {
+    const lines = [
+      `保存地点を${action}。`,
+      `名称：${location.name}`,
+      `座標：${formatLocationCoordinates(location)}`,
+      `ディメンション：${formatDimension(location.dimension)}`,
+      `作成者：${await this.formatCreatedBy(realmId, location.createdBy)}`,
+    ];
+    if (location.note) lines.push(`備考：${limit(location.note, 500)}`);
+    return lines.join('\n');
+  }
+
+  private async formatLocationShowMessage(realmId: string, location: SavedLocation): Promise<string> {
+    const lines = [
+      `名称：${location.name}`,
+      `座標：${formatLocationCoordinates(location)}`,
+      `ディメンション：${formatDimension(location.dimension)}`,
+      `作成者：${await this.formatCreatedBy(realmId, location.createdBy)}`,
+      `備考：${location.note ? limit(location.note, 1000) : 'なし'}`,
+      '画像：',
+    ];
+    if (location.images.length === 0) lines.push('- なし');
+    else location.images.forEach((image, index) => lines.push(`- ${index + 1}. [${image.name || `画像${index + 1}`}](${image.url})`));
+    return limit(lines.join('\n'), 1950);
+  }
+
+  private async formatCreatedBy(realmId: string, createdBy: SavedLocation['createdBy']): Promise<string> {
+    const link = this.config.discord.guildId
+      ? this.store.getDiscordPlayerLink(this.config.discord.guildId, realmId, createdBy.id)
+      : undefined;
+    const roleName = await this.roleName(createdBy.roleId || link?.roleId);
+    const playerName = link?.playerName || createdBy.name;
+    return `${playerName}（${roleName || '未紐付け'}）`;
+  }
+
+  private async formatEventMessage(event: RealmEvent): Promise<string> {
+    const playerName = event.playerName
+      ? await this.formatPlayerNameByName(event.realmId, event.playerName)
+      : '取得できませんでした';
+    const lines = [
+      limit(event.content || '内容を取得できませんでした', 1000),
+      `達成者：${limit(playerName, 200)}`,
+    ];
+    if (event.coordinates && [event.coordinates.x, event.coordinates.y, event.coordinates.z].some((value) => value !== undefined)) {
+      lines.push(`座標：${event.coordinates.x ?? '?'}, ${event.coordinates.y ?? '?'}, ${event.coordinates.z ?? '?'}`);
+    }
+    return lines.join('\n');
+  }
+
+  private async formatPlayerNameByName(realmId: string, playerName: string): Promise<string> {
+    const link = this.config.discord.guildId
+      ? this.store.findDiscordPlayerLinkForPlayerName(realmId, playerName, this.config.discord.guildId)
+      : undefined;
+    const roleName = await this.roleName(link?.roleId);
+    return `${sanitizePlayerName(playerName)}（${roleName || '未紐付け'}）`;
+  }
+
+  private async roleName(roleId?: string): Promise<string | undefined> {
+    if (!roleId || !this.config.discord.guildId) return undefined;
+    const guild = await this.client.guilds.fetch(this.config.discord.guildId).catch(() => null);
+    if (!guild) return undefined;
+    const cached = guild.roles.cache.get(roleId);
+    const role = cached || await guild.roles.fetch(roleId).catch(() => null);
+    return role?.name;
   }
 }
 
@@ -476,7 +708,33 @@ function buildCommands(realms: RealmConfig[]): Array<SlashCommandBuilder | Slash
         addRealmOption(subcommand, names, realms.length > 1);
         return subcommand;
       }));
-  return [...commands, location];
+  const player = new SlashCommandBuilder()
+    .setName('player')
+    .setDescription('MinecraftプレイヤーとDiscordアカウントを管理します')
+    .addSubcommand((subcommand) => {
+      subcommand
+        .setName('link')
+        .setDescription('プレイヤーと実行者を紐づけ、専用ロールを付与します')
+        .addStringOption((option) => option.setName('player_name').setDescription('Minecraftプレイヤー名').setRequired(true))
+        .addStringOption((option) => option.setName('role_name').setDescription('作成するロール名。省略時はDiscordアカウント名'));
+      addRealmOption(subcommand, names, realms.length > 1);
+      return subcommand;
+    })
+    .addSubcommand((subcommand) => {
+      subcommand
+        .setName('unlink')
+        .setDescription('プレイヤーと実行者の紐づけを解除します')
+        .addStringOption((option) => option.setName('player_name').setDescription('Minecraftプレイヤー名').setRequired(true));
+      addRealmOption(subcommand, names, realms.length > 1);
+      return subcommand;
+    });
+  const monitor = new SlashCommandBuilder()
+    .setName('monitor')
+    .setDescription('Realm監視用アカウントの接続を管理します')
+    .addSubcommand((subcommand) => subcommand.setName('login').setDescription('監視を有効化してRealmへ接続します'))
+    .addSubcommand((subcommand) => subcommand.setName('logout').setDescription('監視を停止して認証を解除します'))
+    .addSubcommand((subcommand) => subcommand.setName('status').setDescription('監視と認証の状態を表示します'));
+  return [...commands, location, player, monitor];
 }
 
 function addRealmOption(
@@ -557,13 +815,6 @@ function parseDimensionRequired(value: string | null): Dimension {
   throw new Error('LOCATION_DIMENSION_INVALID');
 }
 
-function interactionUser(interaction: ChatInputCommandInteraction): SavedLocation['createdBy'] {
-  return {
-    id: interaction.user.id,
-    name: interaction.user.globalName || interaction.user.username,
-  };
-}
-
 function collectLocationImages(interaction: ChatInputCommandInteraction): LocationImage[] {
   const images: LocationImage[] = [];
   for (const optionName of LOCATION_IMAGE_OPTION_NAMES) {
@@ -630,38 +881,6 @@ function formatLocationList(locations: SavedLocation[], title: string, searchQue
   return limit(lines.join('\n'), 1950);
 }
 
-function formatLocationSavedMessage(action: string, location: SavedLocation): string {
-  const lines = [
-    `保存地点を${action}。`,
-    `名称：${location.name}`,
-    `座標：${formatLocationCoordinates(location)}`,
-    `ディメンション：${formatDimension(location.dimension)}`,
-    `作成者：${location.createdBy.name}`,
-  ];
-  if (location.note) lines.push(`備考：${limit(location.note, 500)}`);
-  return lines.join('\n');
-}
-
-function formatLocationShowMessage(location: SavedLocation): string {
-  const lines = [
-    `名称：${location.name}`,
-    `座標：${formatLocationCoordinates(location)}`,
-    `ディメンション：${formatDimension(location.dimension)}`,
-    `作成者：${location.createdBy.name}`,
-    `備考：${location.note ? limit(location.note, 1000) : 'なし'}`,
-    '画像：',
-  ];
-  if (location.images.length === 0) {
-    lines.push('- なし');
-  } else {
-    location.images.forEach((image, index) => {
-      const label = image.name || `画像${index + 1}`;
-      lines.push(`- ${index + 1}. [${label}](${image.url})`);
-    });
-  }
-  return limit(lines.join('\n'), 1950);
-}
-
 function normalizeSearchText(value: string): string {
   return value.normalize('NFKC').trim().toLocaleLowerCase('ja-JP');
 }
@@ -695,19 +914,56 @@ function formatLocationError(error: unknown): string {
   return `保存地点を処理できませんでした：${limit(code, 500)}`;
 }
 
-function formatPlayerNames(players: Array<{ name: string }>): string {
-  return players.length === 0 ? 'なし' : players.map((player) => player.name).join(', ');
+function formatCommandError(code: string): string {
+  if (code === 'COMMAND_ROLE_REQUIRED') return 'このDiscordアカウントにはMinecraftプレイヤーとの紐づけロールがないため、コマンドを使用できません。管理者に `/player link` を依頼してください。';
+  if (code === 'DISCORD_GUILD_REQUIRED') return 'ロール連携にはDISCORD_GUILD_IDの設定が必要です。';
+  if (code === 'DISCORD_GUILD_INVALID') return 'このDiscordサーバーでは使用できません。';
+  if (code === 'PLAYER_NAME_INVALID') return '有効なMinecraftプレイヤー名を指定してください。UUIDや内部識別子は指定できません。';
+  if (code === 'PLAYER_ROLE_NAME_REQUIRED') return 'ロール名またはDiscordアカウント名を取得できませんでした。';
+  if (code === 'PLAYER_ROLE_CREATE_FAILED') return '専用ロールを作成・付与できませんでした。BOTのManage Roles権限とロール階層を確認してください。';
+  if (code === 'PLAYER_LINK_USER_ALREADY_EXISTS') return 'このDiscordアカウントは既にこのRealmのプレイヤーと紐づいています。';
+  if (code === 'PLAYER_LINK_PLAYER_ALREADY_EXISTS') return 'このプレイヤーは既に別のDiscordアカウントと紐づいています。';
+  if (code === 'PLAYER_LINK_NOT_FOUND') return '指定されたプレイヤーとの紐づけが見つかりません。';
+  if (code === 'MONITOR_DISABLED') return '監視機能は無効です。`/monitor login` で監視を再開してください。';
+  if (code === 'MONITOR_ACCOUNT_LOGGED_OUT') return '監視用アカウントはログアウト中です。`/monitor login` を実行してください。';
+  if (code === 'MONITOR_ACCOUNT_IN_USE') return '監視用アカウントはMinecraft本体または別端末で使用中のため、BOTがRealmへログインできません。Minecraftからログアウトしてから `/monitor login` を再実行してください。';
+  if (code === 'MONITOR_NOT_READY') return '監視用アカウントのRealm接続がまだ準備中です。`/monitor status` で状態を確認してください。';
+  if (code === 'MONITOR_SUBCOMMAND_UNKNOWN') return 'monitorのサブコマンドが正しくありません。';
+  if (code === 'PLAYER_SUBCOMMAND_UNKNOWN') return 'playerのサブコマンドが正しくありません。';
+  if (code === 'REALMS_API_AUTH_REQUIRED') return '監視用アカウントの認証が必要です。`/monitor login` を実行し、表示された認証案内に従ってください。';
+  return `Realm情報を取得できませんでした：${limit(code, 500)}`;
 }
 
-function formatEventMessage(event: RealmEvent): string {
-  const lines = [
-    limit(event.content || '内容を取得できませんでした', 1000),
-    `達成者：${limit(event.playerName || '取得できませんでした', 200)}`,
-  ];
-  if (event.coordinates && [event.coordinates.x, event.coordinates.y, event.coordinates.z].some((value) => value !== undefined)) {
-    lines.push(`座標：${event.coordinates.x ?? '?'}, ${event.coordinates.y ?? '?'}, ${event.coordinates.z ?? '?'}`);
+function formatMonitorLoginMessage(status: MonitorStatus): string {
+  if (status.state === 'auth-required' && status.prompt) {
+    return [
+      '監視を有効化しました。監視用アカウントの認証が必要です。',
+      `認証URL：${status.prompt.verificationUri}`,
+      `コード：${status.prompt.userCode}`,
+      '認証後、`/monitor status` で接続状態を確認してください。',
+    ].join('\n');
   }
+  if (status.state === 'account-in-use') return formatCommandError('MONITOR_ACCOUNT_IN_USE');
+  if (status.state === 'ready') return '監視を有効化し、Realm接続を開始しました。';
+  return '監視を有効化し、Realm接続を開始しました。認証が必要な場合は `/monitor status` を確認してください。';
+}
+
+function formatMonitorStatus(status: MonitorStatus): string {
+  const lines = [`監視状態：${status.enabled ? '有効' : '無効'}`, `認証状態：${formatMonitorState(status.state)}`];
+  if (status.state === 'auth-required' && status.prompt) {
+    lines.push(`認証URL：${status.prompt.verificationUri}`, `コード：${status.prompt.userCode}`);
+  }
+  if (status.lastError) lines.push(`エラー：${limit(status.lastError, 500)}`);
   return lines.join('\n');
+}
+
+function formatMonitorState(state: MonitorStatus['state']): string {
+  if (state === 'ready') return '接続中';
+  if (state === 'connecting') return '接続処理中';
+  if (state === 'auth-required') return '認証が必要';
+  if (state === 'account-in-use') return 'アカウント使用中で接続失敗';
+  if (state === 'error') return 'エラー';
+  return '停止中';
 }
 
 function formatRealmState(state?: string): string {
