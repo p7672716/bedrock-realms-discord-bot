@@ -141,6 +141,7 @@ export class NethernetRealmTransport extends EventEmitter {
       });
       client.credentials = signaling.credentials;
       client.signalHandler = signaling.write.bind(signaling);
+      this.options.log.info(`Creating NetherNet WebRTC offer for network ${this.options.networkId}`);
       await client.connect();
     } catch (error) {
       this.close(error instanceof Error ? error.message : String(error));
@@ -280,6 +281,7 @@ class JsonRpcSignaling extends EventEmitter {
       this.connectionId = signal.connectionId;
       data = await this.prepareConnectRequest(data);
       this.connectRequestSent = true;
+      this.log.info(`Sending NetherNet connect request to ${String(signal.networkId ?? this.serverNetworkId)}`);
     }
 
     this.sendSignalPayload(signal.networkId, data);
@@ -351,6 +353,7 @@ class JsonRpcSignaling extends EventEmitter {
     try {
       const signal = SignalStructure.fromString(signalMessage);
       signal.networkId = String(param.From ?? this.serverNetworkId);
+      this.log.info(`Received NetherNet ${signal.type} signal from ${String(signal.networkId)}`);
       if (signal.type === SignalType.CandidateAdd && !isUsableCandidate(signal.data)) return;
 
       // The Realm peer creates its ICE side after accepting the offer. Match
